@@ -34,6 +34,11 @@ namespace
 		TEXT("Size each layer to what it actually draws rather than to the region it was pushed for, which ")
 		TEXT("is the whole screen for an element with no clip. Off allocates the full region."));
 
+	TAutoConsoleVariable<int32> CVarLayerPoolMaxMB(
+		TEXT("folio.Layers.PoolMaxMB"), 128,
+		TEXT("Maximum MiB of idle Folio render-targets retained per document layer stack. ")
+		TEXT("Set to 0 to disable idle pooling. Does not limit active, cached or caller-owned targets."));
+
 	/** Shrunk only when the drawn area is under this share of the layer, so a near-full layer keeps its pooled size. */
 	constexpr float TightenBelow = 0.6f;
 
@@ -94,6 +99,7 @@ void FFolioLayerStack::Reset()
 
 	Stack.Empty();
 	Pool.Empty();
+	PoolBytes = 0;
 	Cache.Empty();
 	Cached.Empty();
 	PrintsOfResults.Empty();
@@ -564,6 +570,7 @@ UTextureRenderTarget2D* FFolioLayerStack::Obtain(const FIntPoint Size)
 	{
 		TStrongObjectPtr<UTextureRenderTarget2D> Found = Available[0];
 		Pool.RemoveSingle(Size, Found);
+		PoolBytes -= int64(Size.X) * int64(Size.Y) * 4;
 		Found->UpdateResourceImmediate(true);
 
 		return Found.Get();
@@ -592,10 +599,31 @@ UTextureRenderTarget2D* FFolioLayerStack::Obtain(const FIntPoint Size)
 
 void FFolioLayerStack::Release(UTextureRenderTarget2D* Target)
 {
-	// A cached result is still somebody's picture; the cache returns it to the pool when it drops it.
-	if (Target && !Cached.Contains(Target))
+	// An active/cached result is somebody else's picture; only completed,
+	// uncached render targets belong to the disposable idle reuse pool.
+	if (!Target || Cached.Contains(Target))
 	{
-		Pool.Add(FIntPoint(Target->SizeX, Target->SizeY), TStrongObjectPtr<UTextureRenderTarget2D>(Target));
+		return;
+	}
+
+	const FIntPoint Size(Target->SizeX, Target->SizeY);
+	const int64 Bytes = int64(Size.X) * int64(Size.Y) * 4;
+	Pool.Add(Size, TStrongObjectPtr<UTextureRenderTarget2D>(Target));
+	PoolBytes += Bytes;
+
+	// Animated masks/shadows can produce a new exact-sized layer each frame.
+	// Without a budget every old size survives indefinitely and eventually OOMs.
+	// The pool owns only idle targets: evicting an entry drops its GC reference,
+	// never a target in Stack, Cache, Cached, or detached to an RmlUi caller.
+	const int64 BudgetBytes = int64(FMath::Max(0, CVarLayerPoolMaxMB.GetValueOnAnyThread())) * 1024 * 1024;
+	while (PoolBytes > BudgetBytes && !Pool.IsEmpty())
+	{
+		auto It = Pool.CreateIterator();
+		const FIntPoint EvictedSize = It.Key();
+		const int64 EvictedBytes = int64(EvictedSize.X) * int64(EvictedSize.Y) * 4;
+		PoolBytes -= EvictedBytes;
+		DEC_MEMORY_STAT_BY(STAT_FolioLayerMemory, EvictedBytes);
+		It.RemoveCurrent();
 	}
 }
 

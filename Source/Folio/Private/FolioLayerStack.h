@@ -332,7 +332,10 @@ private:
 	void ResolveAndRecycle(FLayer& Layer);
 
 	TArray<FLayer> Stack;
+	// Only idle, reusable targets are counted. Targets held by active layers,
+	// cached composites or RmlUi callers are never eligible for pool eviction.
 	TMultiMap<FIntPoint, TStrongObjectPtr<UTextureRenderTarget2D>> Pool;
+	int64 PoolBytes = 0;
 
 	int32 Scale = 1;
 };
