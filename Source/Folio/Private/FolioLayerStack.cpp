@@ -29,6 +29,16 @@ namespace
 		TEXT("Reuse a layer's finished picture when what it draws has not changed since an earlier frame, so ")
 		TEXT("only layers whose content moved are drawn again. Off draws every layer every frame."));
 
+	/**
+	 * Half-float layers instead of 8-bit. Layers hold linear light that Slate gamma-encodes on composite,
+	 * so 8 bits leave dark soft gradients (glows, shadows, haze) banding and cutting off early. Doubles
+	 * layer memory. Read when a target is allocated; idle pooled targets are per format.
+	 */
+	TAutoConsoleVariable<bool> CVarLayerHighPrecision(
+		TEXT("folio.Layers.HighPrecision"),
+		false,
+		TEXT("Allocate Folio layer render targets as RGBA16F rather than RGBA8 (smoother dark gradients, 2x memory)."));
+
 	TAutoConsoleVariable<bool> CVarLayerTighten(
 		TEXT("folio.Layers.Tighten"), true,
 		TEXT("Size each layer to what it actually draws rather than to the region it was pushed for, which ")
@@ -114,8 +124,19 @@ FFolioLayerStack::FCacheStats FFolioLayerStack::TakeCacheStats()
 	return Taken;
 }
 
+float FFolioLayerStack::MarginFor(const float BlurSigma, const TArrayView<const Folio::FCustomFilterCall> Custom)
+{
+	float Margin = BlurSigma > 0.0f ? FMath::CeilToFloat(3.0f * BlurSigma) + 2.0f : 2.0f;
+	for (const Folio::FCustomFilterCall& Call : Custom)
+	{
+		Margin = FMath::Max(Margin, FMath::CeilToFloat(Call.Reach) + 2.0f);
+	}
+	return Margin;
+}
+
 bool FFolioLayerStack::PrintOf(const FLayer& Layer, const float BlurSigma,
-	const TArrayView<const Folio::FColourFilter> Colour, UTextureRenderTarget2D* Mask, uint64& OutPrint)
+	const TArrayView<const Folio::FColourFilter> Colour, UTextureRenderTarget2D* Mask, uint64& OutPrint,
+	const TArrayView<const Folio::FCustomFilterCall> Custom)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(Folio_PrintLayer);
 
@@ -142,6 +163,19 @@ bool FFolioLayerStack::PrintOf(const FLayer& Layer, const float BlurSigma,
 	{
 		Print = HashValue(Filter.Kind, Print);
 		Print = HashValue(Filter.Amount, Print);
+	}
+	for (const Folio::FCustomFilterCall& Call : Custom)
+	{
+		// An animated gpu-filter is a different picture every frame, so its layer is never reused.
+		if (Call.bAnimated)
+		{
+			if (Traced)
+			{
+				Traced->Uncacheable = FString::Printf(TEXT("gpu-filter %s is animated"), *Call.Name.ToString());
+			}
+			return false;
+		}
+		Print = HashValue(Call.Print, Print);
 	}
 	if (Traced)
 	{
@@ -563,10 +597,17 @@ void FFolioLayerStack::TakeRectOf(FLayer& Layer, UTextureRenderTarget2D* Result)
 
 UTextureRenderTarget2D* FFolioLayerStack::Obtain(const FIntPoint Size)
 {
+	const ETextureRenderTargetFormat Format = CVarLayerHighPrecision.GetValueOnGameThread() ? RTF_RGBA16f : RTF_RGBA8;
+
 	TArray<TStrongObjectPtr<UTextureRenderTarget2D>> Available;
 	Pool.MultiFind(Size, Available);
+	// Only a pooled target of the format currently asked for, so toggling the cvar takes effect.
+	Available.RemoveAll([Format](const TStrongObjectPtr<UTextureRenderTarget2D>& Pooled)
+	{
+		return !Pooled.IsValid() || Pooled->RenderTargetFormat != Format;
+	});
 
-	if (Available.Num() > 0 && Available[0].IsValid())
+	if (Available.Num() > 0)
 	{
 		TStrongObjectPtr<UTextureRenderTarget2D> Found = Available[0];
 		Pool.RemoveSingle(Size, Found);
@@ -584,7 +625,7 @@ UTextureRenderTarget2D* FFolioLayerStack::Obtain(const FIntPoint Size)
 	INC_MEMORY_STAT_BY(STAT_FolioLayerMemory, int64(Size.X) * int64(Size.Y) * 4);
 
 	UTextureRenderTarget2D* Target = NewObject<UTextureRenderTarget2D>();
-	Target->RenderTargetFormat = RTF_RGBA8;
+	Target->RenderTargetFormat = Format;
 
 	// Premultiplied transparent, not opaque black: a layer that starts black fringes every
 	// edge it later composites over.
@@ -807,7 +848,8 @@ void FFolioLayerStack::EnableClipMask(const bool bEnable)
 }
 
 UTextureRenderTarget2D* FFolioLayerStack::DetachCurrent(const float BlurSigma,
-	const TArrayView<const Folio::FColourFilter> Colour, UTextureRenderTarget2D* Mask, FIntPoint* OutOrigin)
+	const TArrayView<const Folio::FColourFilter> Colour, UTextureRenderTarget2D* Mask, FIntPoint* OutOrigin,
+	const TArrayView<const Folio::FCustomFilterCall> Custom)
 {
 	if (Stack.IsEmpty())
 	{
@@ -817,7 +859,7 @@ UTextureRenderTarget2D* FFolioLayerStack::DetachCurrent(const float BlurSigma,
 	FLayer& Layer = Stack.Last();
 
 	uint64 Print = 0;
-	const bool bPrinted = PrintOf(Layer, BlurSigma, Colour, Mask, Print);
+	const bool bPrinted = PrintOf(Layer, BlurSigma, Colour, Mask, Print, Custom);
 	if (bPrinted)
 	{
 		// A caller that cannot be told where the result sits needs it covering the layer's whole region.
@@ -848,10 +890,11 @@ UTextureRenderTarget2D* FFolioLayerStack::DetachCurrent(const float BlurSigma,
 	const FIntPoint PushedClip = Layer.ClipSize;
 	const FIntPoint PushedOrigin = Layer.Origin;
 
-	Prepare(Layer, BlurSigma > 0.0f ? FMath::CeilToFloat(3.0f * BlurSigma) + 2.0f : 2.0f, OutOrigin != nullptr);
+	Prepare(Layer, MarginFor(BlurSigma, Custom), OutOrigin != nullptr);
 	ResolveAndRecycle(Layer);
 
 	Folio::ApplyColourFilters(Layer.Target.Get(), Colour);
+	Folio::ApplyCustomFilters(Layer.Target.Get(), Custom, ScaleOf(Layer), Layer.Origin);
 
 	// Sigma arrives in the document's pixels, and a supersampled layer has more of them per document
 	// pixel: an unscaled blur would tighten as the sample count rose. The step goes with it, so the
@@ -891,7 +934,8 @@ UTextureRenderTarget2D* FFolioLayerStack::DetachCurrent(const float BlurSigma,
 }
 
 void FFolioLayerStack::CompositeDown(const bool bBlend, const float BlurSigma,
-	const TArrayView<const Folio::FColourFilter> Colour, UTextureRenderTarget2D* Mask)
+	const TArrayView<const Folio::FColourFilter> Colour, UTextureRenderTarget2D* Mask,
+	const TArrayView<const Folio::FCustomFilterCall> Custom)
 {
 	if (Stack.Num() < 2)
 	{
@@ -901,7 +945,7 @@ void FFolioLayerStack::CompositeDown(const bool bBlend, const float BlurSigma,
 	FLayer& Source = Stack.Last();
 
 	uint64 Print = 0;
-	const bool bPrinted = PrintOf(Source, BlurSigma, Colour, Mask, Print);
+	const bool bPrinted = PrintOf(Source, BlurSigma, Colour, Mask, Print, Custom);
 	if (bPrinted)
 	{
 		if (UTextureRenderTarget2D* Reused = FindCached(Print))
@@ -922,12 +966,14 @@ void FFolioLayerStack::CompositeDown(const bool bBlend, const float BlurSigma,
 	}
 	INC_DWORD_STAT(STAT_FolioLayersDrawn);
 
-	Prepare(Source, BlurSigma > 0.0f ? FMath::CeilToFloat(3.0f * BlurSigma) + 2.0f : 2.0f, /*bMayShrink*/ true);
+	Prepare(Source, MarginFor(BlurSigma, Custom), /*bMayShrink*/ true);
 	ResolveAndRecycle(Source);
 
 	// Colour before blur, which is the order CSS gives and the order that matters: blurring a
 	// desaturated layer and desaturating a blurred one differ wherever the blur crosses an edge.
 	Folio::ApplyColourFilters(Source.Target.Get(), Colour);
+	// Game gpu-filters see the element at full resolution, before any blur softens it.
+	Folio::ApplyCustomFilters(Source.Target.Get(), Custom, ScaleOf(Source), Source.Origin);
 
 	// A blur is a low pass, so the samples a supersampled layer holds are exactly what it is about to
 	// throw away. Averaging down first makes the kernel cost what it costs at one sample per pixel -

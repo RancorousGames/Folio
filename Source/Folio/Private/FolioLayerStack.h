@@ -1,6 +1,7 @@
 #pragma once
 
 #include "FolioColourShader.h"
+#include "FolioCustomFilterApply.h"
 
 #include "CoreMinimal.h"
 #include "FolioDrawList.h"
@@ -135,9 +136,13 @@ public:
 	/** Whether draws recorded into the top layer are testing a stencil. */
 	bool CurrentHasClipMask() const { return !Stack.IsEmpty() && Stack.Last().bClipMaskEnabled; }
 
+	/** Layer margin a set of filters needs, in document pixels: the blur's reach or the widest gpu-filter reach. */
+	static float MarginFor(float BlurSigma, TArrayView<const Folio::FCustomFilterCall> Custom);
+
 	/** Resolves the current layer and composites it into the one below. */
 	void CompositeDown(bool bBlend, float BlurSigma,
-		TArrayView<const Folio::FColourFilter> Colour = {}, UTextureRenderTarget2D* Mask = nullptr);
+		TArrayView<const Folio::FColourFilter> Colour = {}, UTextureRenderTarget2D* Mask = nullptr,
+		TArrayView<const Folio::FCustomFilterCall> Custom = {});
 
 	/**
 	 * Resolves the current layer, hands its target to the caller and replaces it.
@@ -151,7 +156,7 @@ public:
 	 */
 	UTextureRenderTarget2D* DetachCurrent(float BlurSigma = 0.0f,
 		TArrayView<const Folio::FColourFilter> Colour = {}, UTextureRenderTarget2D* Mask = nullptr,
-		FIntPoint* OutOrigin = nullptr);
+		FIntPoint* OutOrigin = nullptr, TArrayView<const Folio::FCustomFilterCall> Custom = {});
 
 	void Reset();
 
@@ -252,7 +257,7 @@ private:
 	 * different picture next frame.
 	 */
 	bool PrintOf(const FLayer& Layer, float BlurSigma, TArrayView<const Folio::FColourFilter> Colour,
-		UTextureRenderTarget2D* Mask, uint64& OutPrint);
+		UTextureRenderTarget2D* Mask, uint64& OutPrint, TArrayView<const Folio::FCustomFilterCall> Custom = {});
 
 	/** What one draw of a traced layer was, broken down so a miss can say which part changed. */
 	struct FTracedDraw
