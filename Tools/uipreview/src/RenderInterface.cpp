@@ -461,6 +461,10 @@ void PreviewRenderInterface::ReleaseAtlasHandle(Folio::FMsdfHandle handle)
 Rml::CompiledFilterHandle PreviewRenderInterface::CompileFilter(const Rml::String& name,
 	const Rml::Dictionary& parameters)
 {
+	// Game GPU passes are unavailable in the standalone renderer. Preserve the element.
+	if (name == "gpu-filter")
+		return RenderInterface_GL3::CompileFilter("opacity", {});
+
 	if (name != "outside-blur")
 		return RenderInterface_GL3::CompileFilter(name, parameters);
 
