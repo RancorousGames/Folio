@@ -24,6 +24,9 @@ public class Folio : ModuleRules
 			// tree. Folio builds no UI with UMG; this is the boundary, not a dependency of the
 			// renderer or the text engine.
 			"UMG",
+				// Folio's exported headers expose both these dependencies to game modules.
+				"RmlUiLibrary",
+				"FolioCore",
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]
@@ -55,8 +58,8 @@ public class Folio : ModuleRules
 			// Controller art, for projects that have licensed it. Folio draws its own glyphs when
 			// this finds nothing, so the dependency buys a source rather than requiring one.
 			"CommonInput",
-			"RmlUiLibrary",
-			"FolioCore",
+			
+			
 		});
 
 		// FPostProcessingInputs is what PrePostProcessPass_RenderThread receives, and the in-scene draw
