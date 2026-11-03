@@ -34,10 +34,32 @@ namespace
 	 * so 8 bits leave dark soft gradients (glows, shadows, haze) banding and cutting off early. Doubles
 	 * layer memory. Read when a target is allocated; idle pooled targets are per format.
 	 */
-	TAutoConsoleVariable<bool> CVarLayerHighPrecision(
+	TAutoConsoleVariable<int32> CVarLayerHighPrecision(
 		TEXT("folio.Layers.HighPrecision"),
 		false,
-		TEXT("Allocate Folio layer render targets as RGBA16F rather than RGBA8 (smoother dark gradients, 2x memory)."));
+		TEXT("Layer precision: 0 RGBA8, 1 all RGBA16F, 2 RGBA16F only for gpu-filter layers."));
+
+	// Weak tracking includes caller-owned/cache targets and targets waiting for GC, not just the idle pool.
+	TArray<TWeakObjectPtr<UTextureRenderTarget2D>> LayerTargets;
+	int64 TargetBytes(const UTextureRenderTarget2D* Target)
+	{
+		return int64(Target->SizeX) * Target->SizeY * (Target->RenderTargetFormat == RTF_RGBA16f ? 8 : 4);
+	}
+	FAutoConsoleCommand MemoryReportCommand(TEXT("folio.Layers.MemoryReport"),
+		TEXT("Report live Folio color RT bytes by format; excludes depth, RDG scratch and driver overhead."),
+		FConsoleCommandDelegate::CreateLambda([]()
+		{
+			int64 Bytes8 = 0, Bytes16 = 0; int32 Count8 = 0, Count16 = 0;
+			LayerTargets.RemoveAll([](const auto& Weak) { return !Weak.IsValid(); });
+			for (const auto& Weak : LayerTargets)
+			{
+				const auto* Target = Weak.Get();
+				if (Target->RenderTargetFormat == RTF_RGBA16f) { Bytes16 += TargetBytes(Target); ++Count16; }
+				else { Bytes8 += TargetBytes(Target); ++Count8; }
+			}
+			UE_LOG(LogTemp, Display, TEXT("FolioLayerMemory mode=%d rgba8_count=%d rgba8_bytes=%lld rgba16_count=%d rgba16_bytes=%lld total_bytes=%lld"),
+				CVarLayerHighPrecision.GetValueOnGameThread(), Count8, Bytes8, Count16, Bytes16, Bytes8+Bytes16);
+		}));
 
 	TAutoConsoleVariable<bool> CVarLayerTighten(
 		TEXT("folio.Layers.Tighten"), true,
@@ -104,7 +126,7 @@ void FFolioLayerStack::Reset()
 {
 	for (const TPair<FIntPoint, TStrongObjectPtr<UTextureRenderTarget2D>>& Pooled : Pool)
 	{
-		DEC_MEMORY_STAT_BY(STAT_FolioLayerMemory, int64(Pooled.Key.X) * int64(Pooled.Key.Y) * 4);
+		DEC_MEMORY_STAT_BY(STAT_FolioLayerMemory, TargetBytes(Pooled.Value.Get()));
 	}
 
 	Stack.Empty();
@@ -153,7 +175,8 @@ bool FFolioLayerStack::PrintOf(const FLayer& Layer, const float BlurSigma,
 		Traced->Origin = Layer.Origin;
 	}
 
-	uint64 Print = HashValue(Layer.Size, 0x464f4c494f);
+	uint64 Print = HashValue(CVarLayerHighPrecision.GetValueOnGameThread(), 0x464f4c494f);
+	Print = HashValue(Layer.Size, Print);
 	Print = HashValue(Layer.ClipSize, Print);
 	Print = HashValue(Layer.Origin, Print);
 	const uint64 Place = Print;
@@ -475,7 +498,7 @@ FIntRect FFolioLayerStack::DocumentRectOf(const FLayer& Layer)
 	return FIntRect(Layer.Origin, Layer.Origin + DocumentSizeOf(Layer));
 }
 
-void FFolioLayerStack::Prepare(FLayer& Layer, const float Margin, const bool bMayShrink)
+void FFolioLayerStack::Prepare(FLayer& Layer, const float Margin, const bool bMayShrink, const bool bGPUFilter)
 {
 	if (Layer.Target.IsValid())
 	{
@@ -562,7 +585,7 @@ void FFolioLayerStack::Prepare(FLayer& Layer, const float Margin, const bool bMa
 		}
 	}
 
-	Layer.Target.Reset(Obtain(Layer.Size));
+	Layer.Target.Reset(Obtain(Layer.Size, bGPUFilter));
 }
 
 FVector4f FFolioLayerStack::MaskTransformFor(const FIntRect& Source, const float SourceScale,
@@ -595,9 +618,11 @@ void FFolioLayerStack::TakeRectOf(FLayer& Layer, UTextureRenderTarget2D* Result)
 	Layer.Size = Rect->Size() * LayerScale;
 }
 
-UTextureRenderTarget2D* FFolioLayerStack::Obtain(const FIntPoint Size)
+UTextureRenderTarget2D* FFolioLayerStack::Obtain(const FIntPoint Size, const bool bGPUFilter)
 {
-	const ETextureRenderTargetFormat Format = CVarLayerHighPrecision.GetValueOnGameThread() ? RTF_RGBA16f : RTF_RGBA8;
+	const int32 Precision = CVarLayerHighPrecision.GetValueOnGameThread();
+	const ETextureRenderTargetFormat Format = (Precision == 1 || (Precision == 2 && bGPUFilter)) ? RTF_RGBA16f : RTF_RGBA8;
+	const int64 Bytes = int64(Size.X) * Size.Y * (Format == RTF_RGBA16f ? 8 : 4);
 
 	TArray<TStrongObjectPtr<UTextureRenderTarget2D>> Available;
 	Pool.MultiFind(Size, Available);
@@ -611,7 +636,7 @@ UTextureRenderTarget2D* FFolioLayerStack::Obtain(const FIntPoint Size)
 	{
 		TStrongObjectPtr<UTextureRenderTarget2D> Found = Available[0];
 		Pool.RemoveSingle(Size, Found);
-		PoolBytes -= int64(Size.X) * int64(Size.Y) * 4;
+		PoolBytes -= TargetBytes(Found.Get());
 		Found->UpdateResourceImmediate(true);
 
 		return Found.Get();
@@ -620,11 +645,13 @@ UTextureRenderTarget2D* FFolioLayerStack::Obtain(const FIntPoint Size)
 	TRACE_CPUPROFILER_EVENT_SCOPE(Folio_AllocateLayer);
 	SCOPE_CYCLE_COUNTER(STAT_FolioAllocateTarget);
 
-	// Four bytes a texel, and a sample count multiplies the texels by itself. Reported because that
-	// is the number that decides whether a sample count is affordable, and nothing else shows it.
-	INC_MEMORY_STAT_BY(STAT_FolioLayerMemory, int64(Size.X) * int64(Size.Y) * 4);
+	// Account for the selected color format, including supersampled pixels.
+	INC_MEMORY_STAT_BY(STAT_FolioLayerMemory, Bytes);
 
 	UTextureRenderTarget2D* Target = NewObject<UTextureRenderTarget2D>();
+	if (LayerTargets.Num() >= 128 && LayerTargets.Num() % 128 == 0)
+		LayerTargets.RemoveAll([](const auto& Weak) { return !Weak.IsValid(); });
+	LayerTargets.Add(Target);
 	Target->RenderTargetFormat = Format;
 
 	// Premultiplied transparent, not opaque black: a layer that starts black fringes every
@@ -648,7 +675,7 @@ void FFolioLayerStack::Release(UTextureRenderTarget2D* Target)
 	}
 
 	const FIntPoint Size(Target->SizeX, Target->SizeY);
-	const int64 Bytes = int64(Size.X) * int64(Size.Y) * 4;
+	const int64 Bytes = TargetBytes(Target);
 	Pool.Add(Size, TStrongObjectPtr<UTextureRenderTarget2D>(Target));
 	PoolBytes += Bytes;
 
@@ -660,8 +687,7 @@ void FFolioLayerStack::Release(UTextureRenderTarget2D* Target)
 	while (PoolBytes > BudgetBytes && !Pool.IsEmpty())
 	{
 		auto It = Pool.CreateIterator();
-		const FIntPoint EvictedSize = It.Key();
-		const int64 EvictedBytes = int64(EvictedSize.X) * int64(EvictedSize.Y) * 4;
+		const int64 EvictedBytes = TargetBytes(It.Value().Get());
 		PoolBytes -= EvictedBytes;
 		DEC_MEMORY_STAT_BY(STAT_FolioLayerMemory, EvictedBytes);
 		It.RemoveCurrent();
@@ -890,7 +916,7 @@ UTextureRenderTarget2D* FFolioLayerStack::DetachCurrent(const float BlurSigma,
 	const FIntPoint PushedClip = Layer.ClipSize;
 	const FIntPoint PushedOrigin = Layer.Origin;
 
-	Prepare(Layer, MarginFor(BlurSigma, Custom), OutOrigin != nullptr);
+	Prepare(Layer, MarginFor(BlurSigma, Custom), OutOrigin != nullptr, !Custom.IsEmpty());
 	ResolveAndRecycle(Layer);
 
 	Folio::ApplyColourFilters(Layer.Target.Get(), Colour);
@@ -966,7 +992,7 @@ void FFolioLayerStack::CompositeDown(const bool bBlend, const float BlurSigma,
 	}
 	INC_DWORD_STAT(STAT_FolioLayersDrawn);
 
-	Prepare(Source, MarginFor(BlurSigma, Custom), /*bMayShrink*/ true);
+	Prepare(Source, MarginFor(BlurSigma, Custom), /*bMayShrink*/ true, !Custom.IsEmpty());
 	ResolveAndRecycle(Source);
 
 	// Colour before blur, which is the order CSS gives and the order that matters: blurring a
@@ -988,7 +1014,7 @@ void FFolioLayerStack::CompositeDown(const bool bBlend, const float BlurSigma,
 
 		if (SourceScale > 1 && Document.X > 0 && Document.Y > 0)
 		{
-			if (UTextureRenderTarget2D* Small = Obtain(Document))
+			if (UTextureRenderTarget2D* Small = Obtain(Document, Source.Target->RenderTargetFormat == RTF_RGBA16f))
 			{
 				Folio::ResolveSupersample(Source.Target.Get(), Small, SourceScale);
 				Composited = Small;

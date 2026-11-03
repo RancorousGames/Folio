@@ -219,7 +219,7 @@ private:
 	 * size of the context, so without this a 60dp masked ring costs a full-screen target, a clear, a
 	 * replay and a mask pass, every frame it changes.
 	 */
-	void Prepare(FLayer& Layer, float Margin, bool bMayShrink);
+	void Prepare(FLayer& Layer, float Margin, bool bMayShrink, bool bGPUFilter = false);
 
 	/** The document pixels a layer covers, in the space below it. */
 	static FIntRect DocumentRectOf(const FLayer& Layer);
@@ -231,7 +231,7 @@ private:
 	void TakeRectOf(FLayer& Layer, UTextureRenderTarget2D* Result) const;
 
 	/** The same without the layer, for a target that is a step in a composite rather than a layer. */
-	UTextureRenderTarget2D* Obtain(FIntPoint Size);
+	UTextureRenderTarget2D* Obtain(FIntPoint Size, bool bGPUFilter = false);
 
 	void Release(UTextureRenderTarget2D* Target);
 
