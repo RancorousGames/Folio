@@ -1,5 +1,7 @@
 #include "FolioDocumentHost.h"
 
+#include "FolioCustomFilterApply.h"
+
 #include "FolioDataModel.h"
 #include "FolioDocumentPath.h"
 #include "FolioInsights.h"
@@ -553,6 +555,11 @@ bool FFolioDocumentHost::Update(const float DeltaSeconds, const float DpRatio, c
 	// Read after the update, not before: RmlUi resets the request to infinity as Update starts and fills
 	// it in as elements ask, so before the call it says nothing about this frame.
 	NextUpdateIn = Context->GetNextUpdateDelay();
+	// An animated gpu-filter changes every frame without RmlUi knowing, so it must not idle.
+	if (Folio::CustomFiltersAnimating())
+	{
+		NextUpdateIn = 0.0;
+	}
 	bDirty = false;
 
 	if (Folio::InvalidationTracing())

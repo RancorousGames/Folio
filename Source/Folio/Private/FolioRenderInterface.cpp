@@ -1543,12 +1543,18 @@ void FFolioRenderInterface::CompositeLayers(const Rml::LayerHandle Source, const
 	float Sigma = 0.0f;
 	bool bOutside = false;
 	TArray<Folio::FColourFilter> Colour;
+	TArray<Folio::FCustomFilterCall> Custom;
 	UTextureRenderTarget2D* Mask = nullptr;
 
 	for (const Rml::CompiledFilterHandle Handle : AppliedFilters)
 	{
 		if (const FFilter* Filter = Filters.Find(Handle))
 		{
+			if (Filter->Custom.IsSet())
+			{
+				Custom.Add(Filter->Custom.GetValue());
+			}
+
 			Sigma = FMath::Max(Sigma, Filter->Sigma);
 			bOutside = bOutside || Filter->bOutside;
 
@@ -1594,7 +1600,7 @@ void FFolioRenderInterface::CompositeLayers(const Rml::LayerHandle Source, const
 	// Below the bottom layer is Slate, not another target.
 	if (Layers.Num() <= 1)
 	{
-		CompositeLayerToSlate(Sigma, Colour, Mask);
+		CompositeLayerToSlate(Sigma, Colour, Mask, Custom);
 		return;
 	}
 
@@ -1605,11 +1611,12 @@ void FFolioRenderInterface::CompositeLayers(const Rml::LayerHandle Source, const
 	// Widened by the blur, which is the one thing that puts colour outside the geometry that made it.
 	if (const FSlateRect Painted = Layers.CurrentContentRect(); Painted.IsValid())
 	{
-		FlushCoveredFields(Sigma > 0.0f ? Painted.ExtendBy(FMargin(3.0f * Sigma)) : Painted,
+		FlushCoveredFields(Sigma > 0.0f || !Custom.IsEmpty()
+				? Painted.ExtendBy(FMargin(FFolioLayerStack::MarginFor(Sigma, Custom))) : Painted,
 			/*DepthFromTop*/ 1);
 	}
 
-	Layers.CompositeDown(BlendMode == Rml::BlendMode::Blend, Sigma, Colour, Mask);
+	Layers.CompositeDown(BlendMode == Rml::BlendMode::Blend, Sigma, Colour, Mask, Custom);
 }
 
 void FFolioRenderInterface::BlurBackdrop(const float Sigma, const bool bOutside)
@@ -1724,10 +1731,11 @@ void FFolioRenderInterface::BlurBackdrop(const float Sigma, const bool bOutside)
 }
 
 void FFolioRenderInterface::CompositeLayerToSlate(const float BlurSigma,
-	const TArrayView<const Folio::FColourFilter> Colour, UTextureRenderTarget2D* Mask)
+	const TArrayView<const Folio::FColourFilter> Colour, UTextureRenderTarget2D* Mask,
+	const TArrayView<const Folio::FCustomFilterCall> Custom)
 {
 	FIntPoint At = LayerOrigin;
-	UTextureRenderTarget2D* Target = Layers.DetachCurrent(BlurSigma, Colour, Mask, &At);
+	UTextureRenderTarget2D* Target = Layers.DetachCurrent(BlurSigma, Colour, Mask, &At, Custom);
 	if (!Target || !ElementList || !FSlateApplication::IsInitialized())
 	{
 		return;
@@ -1916,6 +1924,39 @@ Rml::CompiledFilterHandle FFolioRenderInterface::CompileFilter(const Rml::String
 		}
 
 		Filter.Colour = Colour;
+	}
+	else if (Name == "gpu-filter")
+	{
+		// A game-registered RDG filter; FolioCore's instancer resolved dp, reach and the element box.
+		Rml::String Value;
+		float Dp = 1.0f, Reach = 0.0f, X = 0.0f, Y = 0.0f, W = 0.0f, H = 0.0f, Opacity = 1.0f;
+		auto Read = [&Parameters](const char* Key, auto& Out)
+		{
+			if (const auto It = Parameters.find(Key); It != Parameters.end())
+			{
+				It->second.GetInto(Out);
+			}
+		};
+		Read("value", Value);
+		Read("dp", Dp);
+		Read("reach", Reach);
+		Read("x", X);
+		Read("y", Y);
+		Read("w", W);
+		Read("h", H);
+		Read("opacity", Opacity);
+
+		Folio::FCustomFilterCompileArgs Context;
+		Context.DpRatio = Dp;
+		Context.ElementPosition = FVector2f(X, Y);
+		Context.ElementSize = FVector2f(W, H);
+		Context.Opacity = Opacity;
+
+		Folio::FCustomFilterCall Call;
+		if (Folio::CompileCustomFilter(Folio::ToFString(Value), Context, Reach, Call))
+		{
+			Filter.Custom = MoveTemp(Call);
+		}
 	}
 	else
 	{

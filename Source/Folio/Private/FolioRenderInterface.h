@@ -345,7 +345,7 @@ private:
 	 * correctly and is then dropped, so the element and everything inside it renders as nothing.
 	 */
 	void CompositeLayerToSlate(float BlurSigma, TArrayView<const Folio::FColourFilter> Colour = {},
-		class UTextureRenderTarget2D* Mask = nullptr);
+		class UTextureRenderTarget2D* Mask = nullptr, TArrayView<const Folio::FCustomFilterCall> Custom = {});
 
 	/** backdrop-filter: blur, through Slate's post-process element, which reads the backbuffer. */
 	void BlurBackdrop(float Sigma, bool bOutside);
@@ -504,6 +504,8 @@ private:
 		bool bOutside = false;
 		/** Set for the eight per-texel filters, which run on the resolved layer before the blur. */
 		TOptional<Folio::FColourFilter> Colour;
+		/** Set for a registered `gpu-filter(...)`, which runs the game's own RDG passes on the layer. */
+		TOptional<Folio::FCustomFilterCall> Custom;
 
 		/**
 		 * The layer a mask-image was drawn into, held until the filter is released.

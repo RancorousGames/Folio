@@ -80,7 +80,8 @@ namespace Folio
 						Resource->GetRenderTargetTexture(), TEXT("FolioLayer"));
 
 					// Separable: horizontal into a scratch target, vertical back into the layer.
-					const FRDGTextureDesc ScratchDesc = FRDGTextureDesc::Create2D(Size, PF_B8G8R8A8,
+					// The layer's own format: 8-bit by default, half float with folio.Layers.HighPrecision.
+					const FRDGTextureDesc ScratchDesc = FRDGTextureDesc::Create2D(Size, TargetTexture->Desc.Format,
 						FClearValueBinding::Transparent, TexCreate_RenderTargetable | TexCreate_ShaderResource);
 					FRDGTextureRef Scratch = GraphBuilder.CreateTexture(ScratchDesc, TEXT("FolioBlurScratch"));
 
