@@ -871,9 +871,13 @@ FReply SFolioCanvas::OnMouseButtonDown(const FGeometry& MyGeometry, const FPoint
 		}
 	}
 
-	// Capturing keeps the release paired with the press even if the cursor leaves, and taking
-	// keyboard focus is what lets a text field receive characters.
-	return FReply::Handled().CaptureMouse(SharedThis(this)).SetUserFocus(SharedThis(this), EFocusCause::Mouse);
+	// Capturing keeps a button's release paired with its press. A gameplay
+	// HUD allows world clicks through empty space and must NOT take keyboard
+	// focus when its Eat/Rest/etc. buttons are pressed: otherwise the next
+	// click-to-move/harvest can be swallowed before Enhanced Input sees Started.
+	// Menus and forms still receive focus for their text fields and navigation.
+	FReply Reply = FReply::Handled().CaptureMouse(SharedThis(this));
+	return bPassThroughEmptySpace ? Reply : Reply.SetUserFocus(SharedThis(this), EFocusCause::Mouse);
 }
 
 FReply SFolioCanvas::OnMouseButtonDoubleClick(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
