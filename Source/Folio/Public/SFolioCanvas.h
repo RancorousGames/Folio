@@ -26,9 +26,14 @@ namespace Rml
  * Slate's own focus and navigation must never run for this content, which is why the widget
  * creates no focusable children and does not participate in Slate's navigation queries.
  *
- * The one exception is accessibility. A screen reader reads Unreal's widget tree, so while one is
- * listening the canvas grows a hit-test invisible, unfocusable child per thing in the document worth
- * announcing. They draw nothing and are gone the moment nothing is listening. See FolioAccessibility.h.
+ * Two exceptions, both invisible proxies that draw nothing:
+ *
+ * - Accessibility. A screen reader reads Unreal's widget tree, so while one is listening the canvas
+ *   grows a hit-test invisible, unfocusable child per thing in the document worth announcing. They
+ *   are gone the moment nothing is listening. See FolioAccessibility.h.
+ * - Hit regions. A pass-through document (SetPassThroughEmptySpace) is itself hit-test invisible and
+ *   grows one hit-testable child per clickable area instead, so Slate only finds the document where
+ *   it has something to click, and UI underneath it stays reachable everywhere else.
  */
 class FOLIO_API SFolioCanvas : public SPanel
 {
@@ -134,7 +139,7 @@ public:
 
 	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override;
 
-	/** Empty unless a screen reader is listening. See FolioAccessibility.h. */
+	/** Screen reader proxies (FolioAccessibility.h) and pass-through hit regions. Usually empty. */
 	virtual FChildren* GetChildren() override;
 	virtual void OnArrangeChildren(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren) const override;
 
@@ -306,13 +311,30 @@ public:
 	void RefreshInteractive();
 
 	/**
-	 * Whether a press that RmlUi resolves to no element is left unhandled, so it reaches the game.
+	 * What the host (a UMG wrapper, a game screen stack) asked the widget's visibility to be.
 	 *
-	 * RmlUi still sees the press, so a focused field blurs. The canvas neither captures the mouse nor
-	 * takes focus for it, and the release of that press is left unhandled too. The wheel over an
-	 * element is kept, so scrolling a panel never also zooms the camera behind it.
+	 * The canvas owns its actual Slate visibility, because hit testing depends on interactivity and
+	 * pass-through too. Hosts must route through this instead of SWidget::SetVisibility, or a host
+	 * setting Visible would turn a pass-through document back into a full-screen click blocker.
+	 * Collapsed/Hidden/HitTestInvisible from the host always win.
 	 */
-	void SetPassThroughEmptySpace(bool bInPassThrough) { bPassThroughEmptySpace = bInPassThrough; }
+	void SetHostVisibility(EVisibility InVisibility);
+
+	/**
+	 * Whether empty space lets the pointer through to whatever is behind the document.
+	 *
+	 * Slate hit-tests only the topmost widget and bubbles an unhandled event to that widget's parents,
+	 * never to siblings underneath. So merely leaving an empty-space click unhandled would hand it to the
+	 * game viewport while any other UI below (another Folio layer, a HUD) never saw it. Instead the
+	 * canvas becomes self-hit-test invisible and exposes one invisible hit region per element tree that
+	 * RmlUi would actually hit (pointer-events not none), rebuilt whenever the document updates. Slate
+	 * then finds this document only over its own controls.
+	 *
+	 * A press inside a region that RmlUi still resolves to nothing (rounded corners, an element
+	 * transform) is left unhandled as before: no capture, no focus, and its release is unhandled too.
+	 * The wheel over an element is kept, so scrolling a panel never also zooms the camera behind it.
+	 */
+	void SetPassThroughEmptySpace(bool bInPassThrough);
 	bool PassesThroughEmptySpace() const { return bPassThroughEmptySpace; }
 
 	/**
@@ -380,8 +402,11 @@ private:
 	/** A screen reader pressed something, so the document has moved without any input reaching Slate. */
 	void OnAccessibilityChanged();
 
-	/** Draws nothing. Painting a proxy is how it gets the geometry a screen reader reads as its bounds. */
-	int32 PaintAccessibility(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
+	/**
+	 * Draws nothing. Painting a proxy is how it gets the geometry a screen reader reads as its bounds and
+	 * how a hit region enters Slate's hit-test grid.
+	 */
+	int32 PaintProxies(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
 		const FSlateRect& CullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId,
 		const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const;
 
@@ -392,6 +417,26 @@ private:
 
 	/** What the tree was last built against, so a resized document re-places its proxies. */
 	float AccessibilityScale = 0.0f;
+
+	/** Rebuilds HitRects/HitProxies from the document when pass-through is on. See SetPassThroughEmptySpace. */
+	void UpdateHitRegions(bool bDocumentChanged, const FGeometry& AllottedGeometry);
+
+	/** One invisible, hit-testable leaf per entry of HitRects. Empty unless passing through. */
+	TSlotlessChildren<SWidget> HitProxies;
+
+	/** Clickable areas in Slate local units, matching HitProxies one to one. */
+	TArray<FSlateRect> HitRects;
+
+	/** What HitRects was last built against, so a rescaled document rebuilds them. */
+	float HitRegionScale = 0.0f;
+	bool bHitRegionsDirty = true;
+
+	/** AccessibleChildren then HitProxies, which is what GetChildren reports. */
+	FCombinedChildren AllChildren;
+
+	/** Applies the effective Slate visibility from the host's request, interactivity and pass-through. */
+	void ApplyVisibility();
+	EVisibility HostVisibility = EVisibility::Visible;
 
 	/** Watches the module for the device changing, so focus can follow it. */
 	FDelegateHandle DeviceChanged;

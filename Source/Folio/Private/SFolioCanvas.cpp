@@ -15,6 +15,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Rendering/SlateRenderer.h"
 #include "Framework/Application/SlateUser.h"
+#include "Widgets/SLeafWidget.h"
 #include "GameFramework/InputSettings.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 
@@ -55,6 +56,69 @@ namespace
 		ECVF_Default);
 #endif
 
+	/**
+	 * One clickable area of a pass-through document. Draws nothing and handles nothing: being painted
+	 * puts it in Slate's hit-test grid, and every pointer event it receives bubbles to its parent canvas,
+	 * which forwards it to RmlUi exactly as if the canvas itself had been hit.
+	 */
+	class SFolioHitProxy final : public SLeafWidget
+	{
+	public:
+		SLATE_BEGIN_ARGS(SFolioHitProxy) {}
+		SLATE_END_ARGS()
+
+		void Construct(const FArguments&) { SetVisibility(EVisibility::Visible); }
+
+		virtual FVector2D ComputeDesiredSize(float) const override { return FVector2D::ZeroVector; }
+
+		virtual int32 OnPaint(const FPaintArgs&, const FGeometry&, const FSlateRect&, FSlateWindowElementList&,
+			const int32 LayerId, const FWidgetStyle&, bool) const override
+		{
+			return LayerId;
+		}
+	};
+
+	/**
+	 * Collects the border boxes RmlUi's GetElementAtPoint could return, in context pixels.
+	 *
+	 * Mirrors that function: every visible element whose pointer-events is not none is hittable,
+	 * whatever its parent's pointer-events, so children are always visited. A box fully inside the
+	 * nearest box already collected adds nothing and is skipped, which keeps a panel of buttons to one
+	 * region. Transforms and clipping are ignored; a region slightly too large is harmless, because
+	 * the press handler still passes a miss through.
+	 */
+	void CollectHitBoxes(Rml::Element* Element, const TOptional<FSlateRect>& Covering, TArray<FSlateRect>& Out)
+	{
+		if (!Element || !Element->IsVisible())
+		{
+			return;
+		}
+
+		TOptional<FSlateRect> Next = Covering;
+		if (Element->GetComputedValues().pointer_events() != Rml::Style::PointerEvents::None)
+		{
+			const Rml::Vector2f Offset = Element->GetAbsoluteOffset(Rml::BoxArea::Border);
+			const Rml::Vector2f Size = Element->GetBox().GetSize(Rml::BoxArea::Border);
+			if (Size.x > 0.0f && Size.y > 0.0f)
+			{
+				const FSlateRect Box(Offset.x, Offset.y, Offset.x + Size.x, Offset.y + Size.y);
+				const bool bCovered = Covering.IsSet()
+					&& Box.Left >= Covering->Left && Box.Top >= Covering->Top
+					&& Box.Right <= Covering->Right && Box.Bottom <= Covering->Bottom;
+				if (!bCovered)
+				{
+					Out.Add(Box);
+					Next = Box;
+				}
+			}
+		}
+
+		for (int32 Index = 0; Index < Element->GetNumChildren(); ++Index)
+		{
+			CollectHitBoxes(Element->GetChild(Index), Next, Out);
+		}
+	}
+
 	bool IsForcedNonInteractive()
 	{
 #if !UE_BUILD_SHIPPING
@@ -72,7 +136,11 @@ const TArray<SFolioCanvas*>& SFolioCanvas::GetLiveCanvases()
 
 SFolioCanvas::SFolioCanvas()
 	: AccessibleChildren(this)
+	, HitProxies(this)
+	, AllChildren(this)
 {
+	AllChildren.AddChildren(AccessibleChildren);
+	AllChildren.AddChildren(HitProxies);
 }
 
 void SFolioCanvas::Construct(const FArguments& InArgs)
@@ -182,9 +250,8 @@ void SFolioCanvas::RefreshInteractive()
 {
 	bInteractive = bDebuggerHold || (bHostInteractive && bDocumentInteractive && !IsForcedNonInteractive());
 
-	// Hit-test invisible rather than merely unfocusable: the mouse has to reach the game behind a HUD
-	// as well, and a leaf widget that answers a hit test still swallows a click it does nothing with.
-	SetVisibility(bInteractive ? EVisibility::Visible : EVisibility::HitTestInvisible);
+	ApplyVisibility();
+	bHitRegionsDirty = true;
 
 	if (!bInteractive && FSlateApplication::IsInitialized())
 	{
@@ -198,6 +265,86 @@ void SFolioCanvas::RefreshInteractive()
 			}
 		});
 	}
+}
+
+void SFolioCanvas::SetHostVisibility(const EVisibility InVisibility)
+{
+	HostVisibility = InVisibility;
+	ApplyVisibility();
+}
+
+void SFolioCanvas::SetPassThroughEmptySpace(const bool bInPassThrough)
+{
+	bPassThroughEmptySpace = bInPassThrough;
+	bHitRegionsDirty = true;
+	ApplyVisibility();
+}
+
+void SFolioCanvas::ApplyVisibility()
+{
+	EVisibility Wanted;
+	if (!HostVisibility.IsVisible())
+	{
+		Wanted = HostVisibility; // Collapsed or Hidden: the host hid the document.
+	}
+	else if (HostVisibility == EVisibility::HitTestInvisible || !bInteractive)
+	{
+		// Hit-test invisible rather than merely unfocusable: the mouse has to reach the game behind a
+		// HUD as well, and a leaf widget that answers a hit test still swallows a click it does nothing with.
+		Wanted = EVisibility::HitTestInvisible;
+	}
+	else if (bPassThroughEmptySpace)
+	{
+		// Only the hit regions answer a hit test. See SetPassThroughEmptySpace.
+		Wanted = EVisibility::SelfHitTestInvisible;
+	}
+	else
+	{
+		Wanted = EVisibility::Visible;
+	}
+
+	if (GetVisibility() != Wanted)
+	{
+		SetVisibility(Wanted);
+	}
+}
+
+void SFolioCanvas::UpdateHitRegions(const bool bDocumentChanged, const FGeometry& AllottedGeometry)
+{
+	const float LocalScale = ContextToLocal(AllottedGeometry);
+	if (!bDocumentChanged && !bHitRegionsDirty && LocalScale == HitRegionScale)
+	{
+		return;
+	}
+	bHitRegionsDirty = false;
+	HitRegionScale = LocalScale;
+
+	TArray<FSlateRect> Boxes;
+	if (bPassThroughEmptySpace && bInteractive && Host.IsLaidOut())
+	{
+		CollectHitBoxes(Host.GetDocument(), TOptional<FSlateRect>(), Boxes);
+		for (FSlateRect& Box : Boxes)
+		{
+			Box = FSlateRect(Box.Left * LocalScale, Box.Top * LocalScale, Box.Right * LocalScale, Box.Bottom * LocalScale);
+		}
+	}
+
+	if (Boxes == HitRects)
+	{
+		return;
+	}
+
+	HitRects = MoveTemp(Boxes);
+	const bool bCountChanged = HitProxies.Num() != HitRects.Num();
+	while (HitProxies.Num() > HitRects.Num())
+	{
+		HitProxies.RemoveAt(HitProxies.Num() - 1);
+	}
+	while (HitProxies.Num() < HitRects.Num())
+	{
+		HitProxies.Add(SNew(SFolioHitProxy));
+	}
+	Invalidate(bCountChanged ? EInvalidateWidgetReason::ChildOrder : EInvalidateWidgetReason::Layout);
 }
 
 void SFolioCanvas::LoadDocument(const FString& RelativePath)
@@ -402,6 +549,7 @@ void SFolioCanvas::Tick(const FGeometry& AllottedGeometry, const double InCurren
 	}
 
 	UpdateAccessibility(bUpdated, AllottedGeometry);
+	UpdateHitRegions(bUpdated, AllottedGeometry);
 
 	// A supersampled surface reads this to decide whether the target it already has is still this
 	// document, so a frame that changed nothing does not rasterise it again.
@@ -423,23 +571,33 @@ FVector2D SFolioCanvas::ComputeDesiredSize(float) const
 
 FChildren* SFolioCanvas::GetChildren()
 {
-	return &AccessibleChildren;
+	return &AllChildren;
 }
 
 void SFolioCanvas::OnArrangeChildren(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren) const
 {
-	if (AccessibleChildren.Num() == 0)
+	// Accessibility: one child, the document itself, filling the canvas. Everything below it is placed
+	// by that widget against the offsets the document laid out at.
+	if (AccessibleChildren.Num() > 0)
 	{
-		return;
+		const TSharedRef<SWidget>& Root = AccessibleChildren[0];
+		if (ArrangedChildren.Accepts(Root->GetVisibility()))
+		{
+			ArrangedChildren.AddWidget(AllottedGeometry.MakeChild(Root,
+				FVector2D(AllottedGeometry.GetLocalSize()), FSlateLayoutTransform()));
+		}
 	}
 
-	// One child, the document itself, filling the canvas. Everything below it is placed by that widget
-	// against the offsets the document laid out at.
-	const TSharedRef<SWidget>& Root = AccessibleChildren[0];
-	if (ArrangedChildren.Accepts(Root->GetVisibility()))
+	// Pass-through hit regions, each over the clickable area it stands for.
+	for (int32 Index = 0; Index < HitProxies.Num() && Index < HitRects.Num(); ++Index)
 	{
-		ArrangedChildren.AddWidget(AllottedGeometry.MakeChild(Root,
-			FVector2D(AllottedGeometry.GetLocalSize()), FSlateLayoutTransform()));
+		const TSharedRef<SWidget>& Proxy = HitProxies[Index];
+		const FSlateRect& Rect = HitRects[Index];
+		if (ArrangedChildren.Accepts(Proxy->GetVisibility()))
+		{
+			ArrangedChildren.AddWidget(AllottedGeometry.MakeChild(Proxy,
+				FVector2D(Rect.GetSize()), FSlateLayoutTransform(FVector2D(Rect.GetTopLeft()))));
+		}
 	}
 }
 
@@ -521,11 +679,11 @@ void SFolioCanvas::DescribeAccessibility(TArray<FString>& Out) const
 	}
 }
 
-int32 SFolioCanvas::PaintAccessibility(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
+int32 SFolioCanvas::PaintProxies(const FPaintArgs& Args, const FGeometry& AllottedGeometry,
 	const FSlateRect& CullingRect, FSlateWindowElementList& OutDrawElements, const int32 LayerId,
 	const FWidgetStyle& InWidgetStyle, const bool bParentEnabled) const
 {
-	if (AccessibleChildren.Num() == 0)
+	if (AccessibleChildren.Num() == 0 && HitProxies.Num() == 0)
 	{
 		return LayerId;
 	}
@@ -728,7 +886,7 @@ int32 SFolioCanvas::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeo
 
 			// Above the text, like the direct path puts it above the document: the proxies draw nothing,
 			// but Slate records the bounds a screen reader's cursor follows when it paints them.
-			PaintAccessibility(Args, AllottedGeometry, CullingRect, OutDrawElements, Highest + 1,
+			PaintProxies(Args, AllottedGeometry, CullingRect, OutDrawElements, Highest + 1,
 				InWidgetStyle, bParentEnabled);
 
 			return Highest + 1;
@@ -742,7 +900,7 @@ int32 SFolioCanvas::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeo
 	Context->Render();
 	Renderer->EndFrame();
 
-	PaintAccessibility(Args, AllottedGeometry, CullingRect, OutDrawElements, LayerId, InWidgetStyle,
+	PaintProxies(Args, AllottedGeometry, CullingRect, OutDrawElements, LayerId, InWidgetStyle,
 		bParentEnabled);
 
 	return FMath::Max(LayerId, Renderer->GetMaxLayerId());

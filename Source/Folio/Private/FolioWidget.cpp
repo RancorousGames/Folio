@@ -79,16 +79,25 @@ void UFolioWidget::SynchronizeProperties()
 	Super::SynchronizeProperties();
 
 	/*
-	 * UWidget pushes its own Visibility onto the canvas here, which puts hit testing back on a document
-	 * that must not take the mouse. The symptom is the game losing the mouse for good the first time the
-	 * viewport's capture goes: a readout that answers a hit test swallows the click that would give the
-	 * capture back, so alt-tabbing away is enough to end mouse look until the level is restarted.
-	 *
-	 * Only the visible case, so a document hidden or collapsed by whatever hosts it stays that way.
+	 * UWidget pushes its own Visibility onto the canvas here, which would put hit testing back on a
+	 * document that must not take the mouse (a non-interactive readout swallowing the click that gives
+	 * viewport capture back) or turn a pass-through document into a full-screen click blocker. Hand
+	 * what UWidget just set to the canvas as the host's request; the canvas decides the rest.
 	 */
-	if (Canvas.IsValid() && !Canvas->IsInteractive() && Canvas->GetVisibility() == EVisibility::Visible)
+	if (Canvas.IsValid())
 	{
-		Canvas->SetVisibility(EVisibility::HitTestInvisible);
+		Canvas->SetHostVisibility(Canvas->GetVisibility());
+	}
+}
+
+void UFolioWidget::SetVisibility(const ESlateVisibility InVisibility)
+{
+	Super::SetVisibility(InVisibility);
+
+	// Same reason as SynchronizeProperties: the host asks, the canvas owns its hit testing.
+	if (Canvas.IsValid())
+	{
+		Canvas->SetHostVisibility(ConvertSerializedVisibilityToRuntime(InVisibility));
 	}
 }
 

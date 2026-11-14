@@ -326,6 +326,9 @@ public:
 	TSharedPtr<SFolioCanvas> GetCanvas() const { return Canvas; }
 
 	FOLIO_API virtual void SynchronizeProperties() override;
+
+	/** Routed to the canvas as the host's request, so it keeps owning hit testing. See SFolioCanvas::SetHostVisibility. */
+	FOLIO_API virtual void SetVisibility(ESlateVisibility InVisibility) override;
 	FOLIO_API virtual void ReleaseSlateResources(bool bReleaseChildren) override;
 
 #if WITH_EDITOR
