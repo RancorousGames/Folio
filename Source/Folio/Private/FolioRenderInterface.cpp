@@ -484,7 +484,8 @@ void FFolioRenderInterface::RenderGeometry(const Rml::CompiledGeometryHandle Han
 			FlushCoveredFields(BoundsOf(Vertices, Offset));
 
 			Layers.DrawField(Vertices, Compiled.Indices, Field->Page->Texture.Get(),
-				Offset - LayerOrigin, FieldParams, EffectParams);
+				Offset - LayerOrigin, FieldParams, EffectParams,
+				ResolveFillTexture(Field->Effect.FillImage), Field->Effect.FillSizePx);
 			return;
 		}
 
@@ -685,7 +686,8 @@ void FFolioRenderInterface::ReturnFieldToLayer(const FDeferredField& Field, cons
 
 	Layers.DrawFieldClipped(Field.Run.Vertices, Field.Run.Indices, Binding->Page->Texture.Get(),
 		FVector2f::ZeroVector, FieldParams, EffectParams,
-		Field.bScissored ? Field.Scissor : FIntRect(), DepthFromTop);
+		Field.bScissored ? Field.Scissor : FIntRect(), DepthFromTop,
+		ResolveFillTexture(Binding->Effect.FillImage), Binding->Effect.FillSizePx);
 }
 
 void FFolioRenderInterface::FlushCoveredFields(const FSlateRect& Bounds, const int32 DepthFromTop)
@@ -982,8 +984,8 @@ Rml::TextureHandle FFolioRenderInterface::RegisterPixels(const void* Bgra, const
 	{
 		Generated->SRGB = true;
 		Generated->Filter = TF_Bilinear;
-		Generated->AddressX = TA_Clamp;
-		Generated->AddressY = TA_Clamp;
+		Generated->AddressX = bWrapNextTexture ? TA_Wrap : TA_Clamp;
+		Generated->AddressY = bWrapNextTexture ? TA_Wrap : TA_Clamp;
 		Generated->NeverStream = true;
 
 		FTexture2DMipMap& Mip = Generated->GetPlatformData()->Mips[0];
@@ -1222,7 +1224,12 @@ UTexture* FFolioRenderInterface::ResolveFillTexture(const std::string& Path)
 	// Through the ordinary texture path, so a pattern is loaded and decoded exactly like any other
 	// piece of art. The handle it hands back is one of ours, so the texture is fished back out of
 	// the map rather than reconstructed.
+	//
+	// Loaded as a texture of its own that wraps. Folio's decoded images clamp, which is right for a
+	// picture, but a pattern clamped is one stretched edge texel everywhere past its first tile -
+	// text that reads as a flat tint. The preview's GL texture repeats, so only the game showed it.
 	Rml::Vector2i Size;
+	const TGuardValue<bool> Wrap(bWrapNextTexture, true);
 	const Rml::TextureHandle Handle = LoadTexture(Size, Path);
 
 	UTexture* Texture = nullptr;

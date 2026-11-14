@@ -39,6 +39,10 @@ BEGIN_SHADER_PARAMETER_STRUCT(FFolioUIParameters, )
 	 * added rather than blended its transparent pixels wash whatever is behind the element.
 	 */
 	SHADER_PARAMETER(FVector4f, UIOptions)
+	/** Text's fill-image pattern. MsdfFill xy: one over the tile size in target pixels. z: strength, 0 for none. */
+	SHADER_PARAMETER_TEXTURE(Texture2D, FillTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, FillSampler)
+	SHADER_PARAMETER(FVector4f, MsdfFill)
 	RENDER_TARGET_BINDING_SLOTS()
 END_SHADER_PARAMETER_STRUCT()
 

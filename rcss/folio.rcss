@@ -49,6 +49,10 @@ thead, tbody, tfoot { display: table-row-group; }
 /* Interactive elements are inline-block so they size to content but still take a box. */
 button, input, select, textarea, progress, progressbar, handle { display: inline-block; }
 
+/* A field's placeholder text. FolioBehaviours.h lays this span over the empty field's content box; the
+   stylesheet gives it the field's font and a colour, since it inherits from the field's parent. */
+.folio-placeholder { position: absolute; pointer-events: none; white-space: nowrap; overflow: hidden; opacity: 0.5; }
+
 /*
  * RmlUi's own tabset elements are as undeclared as everything else. The tabset shows and
  * hides panels by writing display onto them directly and removing it again, so the value a

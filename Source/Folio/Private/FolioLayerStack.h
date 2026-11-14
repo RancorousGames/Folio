@@ -97,7 +97,8 @@ public:
 	 * layer stack does not have to know what a glyph atlas is.
 	 */
 	void DrawField(const TArray<FSlateVertex>& Vertices, const TArray<SlateIndex>& Indices,
-		UTexture* Texture, FVector2f Offset, FVector4f Field, FVector4f Effect);
+		UTexture* Texture, FVector2f Offset, FVector4f Field, FVector4f Effect, UTexture* Fill = nullptr,
+		float FillSize = 0.0f);
 
 	/**
 	 * Records text with a scissor and no mask, rather than the layer's current state.
@@ -110,7 +111,7 @@ public:
 	 */
 	void DrawFieldClipped(const TArray<FSlateVertex>& Vertices, const TArray<SlateIndex>& Indices,
 		UTexture* Texture, FVector2f Offset, FVector4f Field, FVector4f Effect, const FIntRect& Scissor,
-		int32 DepthFromTop = 0);
+		int32 DepthFromTop = 0, UTexture* Fill = nullptr, float FillSize = 0.0f);
 
 	/** Records a clip mask operation, which every later draw in this layer tests against. */
 	void SetClipMask(Rml::ClipMaskOperation Operation, const TArray<FSlateVertex>& Vertices,

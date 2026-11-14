@@ -751,7 +751,7 @@ void App::RenderFrame()
 {
 	system_interface->AdvanceTime(options.dt_ms / 1000.0);
 	context->Update();
-	behaviours.UpdateScrollState();
+	behaviours.Update();
 	Backend::BeginFrame();
 	context->Render();
 	Backend::EndFrame();
@@ -761,7 +761,7 @@ void App::Advance(double time_seconds)
 {
 	system_interface->SetTime(time_seconds);
 	context->Update();
-	behaviours.UpdateScrollState();
+	behaviours.Update();
 }
 
 void App::StepLive(double time_seconds)

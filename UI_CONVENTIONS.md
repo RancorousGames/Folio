@@ -570,7 +570,7 @@ RML is not HTML. Only these tags are backed by real element types with behaviour
 | `body` | The document element |
 | `img` | Image. Takes `sprite="name"`, or `src` + `rect` |
 | `handle` | Drag/resize handle. `move_target="id"` moves that element, `size_target="id"` resizes it, `edge_margin` keeps it inside its parent. Both are RmlUi's own and need no code |
-| `form`, `input`, `select`, `textarea`, `label` | Form controls. `input` types: `text`, `password`, `checkbox`, `radio`, `range`, `submit` |
+| `form`, `input`, `select`, `textarea`, `label` | Form controls. `input` types: `text`, `password`, `checkbox`, `radio`, `range`, `submit`. `placeholder` draws as a `span.folio-placeholder` after the field; style that span (docs/form_controls.md) |
 | `progress` / `progressbar` | Takes `value`, `max`, `direction` (`top`, `right`, `bottom`, `left`, `clockwise`, `counter-clockwise`) and `start-edge`, plus the `fill-image` property |
 | `tabset` | `<tabset><tabs><tab>…</tab></tabs><panels><panel>…</panel></panels></tabset>`. Sets `:selected` on the active tab and its panel, and `display: none` on the others, as inline properties |
 | `text` | A paragraph of prose whose contents are Folio's markup rather than RML: `<style>x</>`, `{tag:}`, `{delay:}`. Reveals one character at a time under `reveal: typewriter`. See [rich text](docs/rich_text.md) |

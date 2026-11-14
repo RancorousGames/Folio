@@ -7,8 +7,10 @@
 #include <RmlUi/Core/EventListener.h>
 #include <RmlUi/Core/ID.h>
 #include <RmlUi/Core/Log.h>
+#include <RmlUi/Core/Math.h>
 #include <RmlUi/Core/ObserverPtr.h>
 #include <RmlUi/Core/Property.h>
+#include <RmlUi/Core/StringUtilities.h>
 #include <RmlUi/Core/Types.h>
 
 /**
@@ -23,7 +25,8 @@
  * RmlUi's own and complete.
  *
  * What is here is the small set every UI wants and no game should write twice: drag an element around,
- * drop it somewhere that does something, close a panel and let an animation finish first. Anything
+ * drop it somewhere that does something, close a panel and let an animation finish first, and draw a
+ * field's `placeholder` while it is empty. Anything
  * past that belongs to the game, through a `dragdrop` listener or `data-event-*` against a model.
  *
  * Both hosts install one, so the preview tool and the game behave the same. A behaviour present in
@@ -90,6 +93,20 @@ public:
 		}
 
 		Document.reset();
+	}
+
+	/**
+	 * Once a frame, after the context update, when layout has settled: the scroll classes and the field
+	 * placeholders below.
+	 */
+	void Update()
+	{
+		UpdateScrollState();
+
+		if (Document)
+		{
+			UpdatePlaceholders();
+		}
 	}
 
 	/**
@@ -286,6 +303,213 @@ private:
 		{
 			StampScroll(Element->GetChild(Index));
 		}
+	}
+
+	static const Rml::String& PlaceholderClass()
+	{
+		static const Rml::String Value = "folio-placeholder";
+		return Value;
+	}
+
+	/**
+	 * `placeholder="..."` on an `<input>` or `<textarea>`, which RmlUi parses and never draws.
+	 *
+	 * Each such field gets a `span.folio-placeholder` right after it, laid over the field's content box and
+	 * shown while the field is empty and visible. A sibling rather than a child, because a field lays out its
+	 * own children (its text and selection) and anything else put inside one never gets a box.
+	 *
+	 * Folio owns only where the span sits and whether it shows. Its look is the stylesheet's: the span
+	 * inherits from the field's parent, not from the field, so style `.folio-placeholder` (or
+	 * `input.name + .folio-placeholder`) with the font and colour the empty field should read in.
+	 */
+	void UpdatePlaceholders()
+	{
+		Rml::ElementDocument* Owner = Document->GetOwnerDocument();
+		if (!Owner)
+		{
+			return;
+		}
+
+		Rml::Vector<Rml::Element*> Fields;
+		Rml::Vector<Rml::Element*> Orphans;
+		CollectFields(Owner, Fields, Orphans);
+
+		// A field that lost its placeholder attribute, or was removed by a data view, leaves its span behind.
+		for (Rml::Element* Orphan : Orphans)
+		{
+			Orphan->GetParentNode()->RemoveChild(Orphan);
+		}
+
+		bool bInserted = false;
+		for (Rml::Element* Field : Fields)
+		{
+			bInserted |= EnsurePlaceholder(*Field);
+		}
+
+		// A new span has no box until it is laid out, and placing it needs one.
+		if (bInserted)
+		{
+			Owner->UpdateDocument();
+		}
+
+		bool bChanged = !Orphans.empty();
+		for (Rml::Element* Field : Fields)
+		{
+			bChanged |= PlacePlaceholder(*Field);
+		}
+
+		// Applied now rather than on the next update, which an idle host may not run for a while: the text
+		// has to vanish on the keystroke that fills the field.
+		if (bChanged)
+		{
+			Owner->UpdateDocument();
+		}
+	}
+
+	static bool IsField(Rml::Element& Element)
+	{
+		const Rml::String& Tag = Element.GetTagName();
+		return (Tag == "input" || Tag == "textarea") && Element.HasAttribute("placeholder");
+	}
+
+	static void CollectFields(Rml::Element* Element, Rml::Vector<Rml::Element*>& OutFields,
+		Rml::Vector<Rml::Element*>& OutOrphans)
+	{
+		for (int Index = 0; Index < Element->GetNumChildren(); ++Index)
+		{
+			Rml::Element* Child = Element->GetChild(Index);
+			if (IsField(*Child))
+			{
+				OutFields.push_back(Child);
+				continue;
+			}
+
+			if (Child->IsClassSet(PlaceholderClass()))
+			{
+				Rml::Element* Before = Child->GetPreviousSibling();
+				if (!Before || !IsField(*Before))
+				{
+					OutOrphans.push_back(Child);
+				}
+				continue;
+			}
+
+			CollectFields(Child, OutFields, OutOrphans);
+		}
+	}
+
+	static Rml::Element* PlaceholderOf(Rml::Element& Field)
+	{
+		Rml::Element* Next = Field.GetNextSibling();
+		return Next && Next->IsClassSet(PlaceholderClass()) ? Next : nullptr;
+	}
+
+	/** Gives the field its span and keeps the span's text in step with the attribute. True if it was new. */
+	static bool EnsurePlaceholder(Rml::Element& Field)
+	{
+		const Rml::String Text = Field.GetAttribute<Rml::String>("placeholder", "");
+		Rml::Element* Span = PlaceholderOf(Field);
+		bool bInserted = false;
+
+		if (!Span)
+		{
+			Rml::ElementPtr New = Field.GetOwnerDocument()->CreateElement("span");
+			New->SetClass(PlaceholderClass(), true);
+			// Hidden until it has been placed once, so it never flashes at the containing block's corner.
+			New->SetProperty("visibility", "hidden");
+			SetPixels(*New, Rml::PropertyId::Left, 0.0f);
+			SetPixels(*New, Rml::PropertyId::Top, 0.0f);
+			Span = Field.GetParentNode()->InsertBefore(std::move(New), Field.GetNextSibling());
+			bInserted = true;
+		}
+
+		if (bInserted || Span->GetAttribute<Rml::String>("folio-text", "") != Text)
+		{
+			Span->SetAttribute("folio-text", Text);
+			Span->SetInnerRML(Rml::StringUtilities::EncodeRml(Text));
+		}
+
+		return bInserted;
+	}
+
+	/** Lays the span over the field's content box and shows it while the field is empty. True on change. */
+	static bool PlacePlaceholder(Rml::Element& Field)
+	{
+		Rml::Element* Span = PlaceholderOf(Field);
+		if (!Span)
+		{
+			return false;
+		}
+
+		const bool bShow = Field.IsVisible(true) && Field.GetAttribute<Rml::String>("value", "").empty();
+		bool bChanged = false;
+
+		if (bShow)
+		{
+			// Moved by the difference between where it is and where it should be, which works whatever its
+			// containing block is: a field in flow is offset from its parent, an absolute span from the
+			// nearest positioned ancestor, and the two need not be the same element.
+			const Rml::Vector2f Want = Field.GetAbsoluteOffset(Rml::BoxArea::Content);
+			const Rml::Vector2f Have = Span->GetAbsoluteOffset(Rml::BoxArea::Border);
+			const Rml::Vector2f Size = Field.GetBox().GetSize(Rml::BoxArea::Content);
+
+			bChanged |= Nudge(*Span, Rml::PropertyId::Left, Want.x - Have.x);
+			bChanged |= Nudge(*Span, Rml::PropertyId::Top, Want.y - Have.y);
+			bChanged |= Resize(*Span, Rml::PropertyId::Width, Size.x);
+			bChanged |= Resize(*Span, Rml::PropertyId::Height, Size.y);
+
+			// One line, centred the way a single-line field centres its own text. A textarea's text starts
+			// at the top, and so does its placeholder.
+			if (Field.GetTagName() == "input")
+			{
+				bChanged |= Resize(*Span, Rml::PropertyId::LineHeight, Size.y);
+			}
+		}
+
+		const bool bHidden = Span->GetLocalProperty(Rml::PropertyId::Visibility) != nullptr;
+		if (bHidden == bShow)
+		{
+			if (bShow)
+			{
+				Span->RemoveProperty("visibility");
+			}
+			else
+			{
+				Span->SetProperty("visibility", "hidden");
+			}
+			bChanged = true;
+		}
+
+		return bChanged;
+	}
+
+	static float LocalPixels(Rml::Element& Element, const Rml::PropertyId Id)
+	{
+		const Rml::Property* Value = Element.GetLocalProperty(Id);
+		return Value ? Value->Get<float>() : 0.0f;
+	}
+
+	/** A quarter pixel of slack, so layout rounding cannot set the span moving every frame. */
+	static bool Nudge(Rml::Element& Element, const Rml::PropertyId Id, const float Delta)
+	{
+		if (Rml::Math::Absolute(Delta) < 0.25f)
+		{
+			return false;
+		}
+
+		SetPixels(Element, Id, LocalPixels(Element, Id) + Delta);
+		return true;
+	}
+
+	static bool Resize(Rml::Element& Element, const Rml::PropertyId Id, const float Value)
+	{
+		if (Element.GetLocalProperty(Id) && Rml::Math::Absolute(LocalPixels(Element, Id) - Value) < 0.25f)
+		{
+			return false;
+		}
+
+		SetPixels(Element, Id, Value);
+		return true;
 	}
 
 	static Rml::Vector<Rml::EventId> Events()

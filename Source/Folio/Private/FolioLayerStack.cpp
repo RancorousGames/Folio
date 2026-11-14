@@ -806,7 +806,8 @@ void FFolioLayerStack::DrawTriangles(const TArray<FSlateVertex>& Vertices, const
 }
 
 void FFolioLayerStack::DrawField(const TArray<FSlateVertex>& Vertices, const TArray<SlateIndex>& Indices,
-	UTexture* Texture, const FVector2f Offset, const FVector4f Field, const FVector4f Effect)
+	UTexture* Texture, const FVector2f Offset, const FVector4f Field, const FVector4f Effect, UTexture* Fill,
+	const float FillSize)
 {
 	if (Stack.IsEmpty() || Indices.Num() < 3 || !Texture)
 	{
@@ -815,12 +816,12 @@ void FFolioLayerStack::DrawField(const TArray<FSlateVertex>& Vertices, const TAr
 
 	FLayer& Layer = Stack.Last();
 	Layer.Draws.AddField(Vertices, Indices, Texture, Offset, Field, Effect,
-		Layer.bClipMaskEnabled, Layer.bClipMaskInverted);
+		Layer.bClipMaskEnabled, Layer.bClipMaskInverted, Fill, FillSize);
 }
 
 void FFolioLayerStack::DrawFieldClipped(const TArray<FSlateVertex>& Vertices, const TArray<SlateIndex>& Indices,
 	UTexture* Texture, const FVector2f Offset, const FVector4f Field, const FVector4f Effect,
-	const FIntRect& Scissor, const int32 DepthFromTop)
+	const FIntRect& Scissor, const int32 DepthFromTop, UTexture* Fill, const float FillSize)
 {
 	const int32 Index = Stack.Num() - 1 - DepthFromTop;
 	if (!Stack.IsValidIndex(Index) || Indices.Num() < 3 || !Texture)
@@ -830,7 +831,7 @@ void FFolioLayerStack::DrawFieldClipped(const TArray<FSlateVertex>& Vertices, co
 
 	FLayer& Layer = Stack[Index];
 	Layer.Draws.AddFieldAt(Vertices, Indices, Texture, Offset, Field, Effect,
-		/*bMasked*/ false, /*bMaskInverted*/ false, Scissor);
+		/*bMasked*/ false, /*bMaskInverted*/ false, Scissor, Fill, FillSize);
 }
 
 void FFolioLayerStack::SetClipMask(const Rml::ClipMaskOperation Operation, const TArray<FSlateVertex>& Vertices,
@@ -1185,6 +1186,10 @@ void FFolioLayerStack::Resolve(FLayer& Layer)
 				FFolioUIParameters* Parameters = GraphBuilder.AllocParameters<FFolioUIParameters>();
 				Parameters->UISampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 				Parameters->UITexture = GWhiteTexture->TextureRHI;
+				// Bound for every text draw, read only by one with a pattern (MsdfFill.z).
+				Parameters->FillTexture = GWhiteTexture->TextureRHI;
+				Parameters->FillSampler = TStaticSamplerState<SF_Bilinear, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI();
+				Parameters->MsdfFill = FVector4f::Zero();
 
 				// Document pixels to clip space. Y is flipped: RmlUi's origin is top left. Against the recorded
 				// space rather than the target, so a larger target scales the same geometry up instead of
@@ -1361,6 +1366,18 @@ void FFolioLayerStack::Resolve(FLayer& Layer)
 								if (FRHITexture* Bound = Draw.Texture->GetResource()->GetTexture2DRHI())
 								{
 									PassParameters.UITexture = Bound;
+								}
+							}
+
+							// Textured text. The pattern tiles in target pixels, and a supersampled
+							// target has Ratio of them per recorded pixel, so the tile is scaled to match.
+							if (bField && Draw.Fill.IsValid() && Draw.Fill->GetResource() && Draw.FillSize > 0.0f)
+							{
+								if (FRHITexture* Pattern = Draw.Fill->GetResource()->TextureRHI)
+								{
+									PassParameters.FillTexture = Pattern;
+									PassParameters.MsdfFill = FVector4f(1.0f / (Draw.FillSize * Ratio.X),
+										1.0f / (Draw.FillSize * Ratio.Y), 1.0f, 0.0f);
 								}
 							}
 

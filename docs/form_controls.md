@@ -41,6 +41,13 @@ input.field selection     { background-color: #4ea1ff4d; }
 
 `selection` is a real child element; there is no `::selection`.
 
+**`placeholder` works.** `<input placeholder="Seek by name…"/>` and `<textarea placeholder="…">` show the text while the field is empty. RmlUi does not draw it; Folio lays a `span.folio-placeholder` over the field's content box, right after the field, and hides it on the first keystroke. There is no `::placeholder`: style the span, and give it the field's font, because it inherits from the field's parent rather than from the field.
+
+```css
+.folio-placeholder { font-style: italic; color: #7d6e58; opacity: 1; }
+input.search + .folio-placeholder { font-size: 15dp; }
+```
+
 **While a field has focus, letters are letters.** Folio's WASD and IJKL navigation schemes stand down automatically.
 
 ## Checkboxes and radios

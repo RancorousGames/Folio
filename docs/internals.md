@@ -448,6 +448,10 @@ with `PythonScriptPlugin` temporarily added to the project's plugin list. It doe
 
 **Where the pattern is read from is the host's job, not the field maths.** Unreal computes the UV from `Parameters.SvPosition` in the Custom node; the preview tool from `gl_FragCoord`, flipped, since GL puts the origin at the bottom. Both are screen space, so a pattern is continuous across a whole run instead of restarting on each glyph quad. `check_shader_parity.sh` skips a block fenced with `FOLIO_MSDF_HOST_BEGIN`/`END` for this: the two renderers are expected to differ there, and only there.
 
+**A pattern has to wrap, and Folio's images clamp.** A decoded image is clamped, which is right for a picture, and the material samples the fill through the texture's own address mode - so clamped, everything past the first tile read one stretched edge texel and textured text came out as a flat tint, in game only, since the preview's GL texture repeats. `ResolveFillTexture` loads its pattern as a separate texture that wraps.
+
+**Inside a layer the pattern travels with the draw.** Text under a filter, a mask or a shadow is recorded and replayed with `FFolioUIMsdfPS`, not the material. Each field draw carries its fill texture and tile size, and the replay binds them (`FillTexture`, `MsdfFill`), with the UV taken from the layer's pixels and scaled by the layer's supersampling ratio. World documents (`FFolioWorldMsdfPS`) still draw text flat.
+
 ## RmlUi's visual test suite, and what its numbers mean
 
 `scripts/visual_tests.sh` runs the 109 documents in `Tests/Data/VisualTests` from the fetched RmlUi tree through uipreview. They cover layout, floats, flexbox, tables, transforms, filters, clip masks, box-shadow and text, and exercise the render interface far harder than anything hand-written here. `verify.sh --visual-tests` runs them; it is off by default because they take longer than the rest of the harness.

@@ -82,14 +82,14 @@ void FFolioDrawList::AddTriangles(const TArray<FSlateVertex>& Vertices, const TA
 
 void FFolioDrawList::AddField(const TArray<FSlateVertex>& Vertices, const TArray<SlateIndex>& Indices,
 	UTexture* Texture, const FVector2f Offset, const FVector4f Field, const FVector4f Effect,
-	const bool bMasked, const bool bMaskInverted)
+	const bool bMasked, const bool bMaskInverted, UTexture* Fill, const float FillSize)
 {
-	AddFieldAt(Vertices, Indices, Texture, Offset, Field, Effect, bMasked, bMaskInverted, Scissor);
+	AddFieldAt(Vertices, Indices, Texture, Offset, Field, Effect, bMasked, bMaskInverted, Scissor, Fill, FillSize);
 }
 
 void FFolioDrawList::AddFieldAt(const TArray<FSlateVertex>& Vertices, const TArray<SlateIndex>& Indices,
 	UTexture* Texture, const FVector2f Offset, const FVector4f Field, const FVector4f Effect,
-	const bool bMasked, const bool bMaskInverted, const FIntRect& InScissor)
+	const bool bMasked, const bool bMaskInverted, const FIntRect& InScissor, UTexture* Fill, const float FillSize)
 {
 	if (Indices.Num() < 3 || !Texture)
 	{
@@ -103,6 +103,11 @@ void FFolioDrawList::AddFieldAt(const TArray<FSlateVertex>& Vertices, const TArr
 	Draw.bMaskInverted = bMaskInverted;
 	Draw.Field = Field;
 	Draw.Effect = Effect;
+	if (Fill && FillSize > 0.0f)
+	{
+		Draw.Fill.Reset(Fill);
+		Draw.FillSize = FillSize;
+	}
 	Convert(Vertices, Indices, Offset, /*bUnpremultiply*/ true, bDecodeSrgb, Draw);
 
 	Draw.Scissor = InScissor;

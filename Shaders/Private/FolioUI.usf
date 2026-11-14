@@ -25,6 +25,11 @@ float4 MsdfEffect;
 // x: 1 when the sample is straight alpha and has to be premultiplied before it is blended.
 float4 UIOptions;
 
+// Text's fill-image pattern. MsdfFill xy: one over the tile size in target pixels. z: strength, 0 for none.
+Texture2D FillTexture;
+SamplerState FillSampler;
+float4 MsdfFill;
+
 void MainVS(
 	in float2 InPosition : ATTRIBUTE0,
 	in float2 InUV : ATTRIBUTE1,
@@ -51,16 +56,16 @@ float4 MainPS(
 // colour rather than on a colour already scaled by its own alpha, and is premultiplied here.
 float4 MsdfPS(
 	in float2 UV : TEXCOORD0,
-	in float4 Color : TEXCOORD1) : SV_Target0
+	in float4 Color : TEXCOORD1,
+	in float4 SvPosition : SV_POSITION) : SV_Target0
 {
 	float4 Premultiplied = float4(Color.rgb * Color.a, Color.a);
 
-	// No fill pattern on this path. A layer already means a filter or a mask is in play, and
-	// binding a second texture here would need a second sampler through the layer's own state.
-	// Passing the atlas keeps the sampler valid; a strength of zero means it is never read.
+	// The pattern is read in the layer's pixels, as Slate's path reads it in the screen's, so it runs
+	// continuously across a word instead of restarting on each glyph quad.
 	return FolioMsdfShade(UITexture, UISampler, UV, MsdfField.xy, MsdfField.z,
 		MsdfEffect.x, MsdfEffect.y, MsdfEffect.z, MsdfField.w, Premultiplied,
-		UITexture, UISampler, UV, 0.0f);
+		FillTexture, FillSampler, SvPosition.xy * MsdfFill.xy, MsdfFill.z);
 }
 
 // Colour writes are disabled for a mask pass, so the stencil is the only output that matters.

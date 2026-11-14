@@ -323,6 +323,9 @@ private:
 	UTexture* ResolveFillTexture(const std::string& Path);
 	TMap<FString, TStrongObjectPtr<UTexture>> FillTextures;
 
+	/** Set while ResolveFillTexture loads a pattern, so RegisterPixels makes that texture wrap rather than clamp. */
+	bool bWrapNextTexture = false;
+
 	/** Every source LoadTexture has read, against the file's timestamp when it read it. */
 	TMap<FString, FDateTime> LoadedTextureTimes;
 

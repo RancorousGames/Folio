@@ -554,7 +554,7 @@ bool FFolioDocumentHost::Update(const float DeltaSeconds, const float DpRatio, c
 	const TCHAR* const Reason = bDirty ? DirtyReason : TEXT("RmlUi asked");
 
 	Context->Update();
-	Behaviours.UpdateScrollState();
+	Behaviours.Update();
 
 	bLaidOut = true;
 
