@@ -158,6 +158,8 @@ Anything not on these lists does not exist. A misspelled name is a warning, neve
 
 **`filter` and `backdrop-filter`** take: `blur`, `drop-shadow`, `brightness`, `contrast`, `grayscale`, `invert`, `opacity`, `saturate`, `sepia`, `hue-rotate`.
 
+`drop-shadow` takes its colour first, as RmlUi writes it, or last, as CSS does: `drop-shadow(#ff8c3c8c 0dp 0dp 8dp)` and `drop-shadow(0dp 0dp 8dp #ff8c3c8c)` are the same shadow. The blur is optional either way.
+
 **`backdrop-filter` additionally takes `outside-blur`, which is Folio's own.** Where `blur` softens what is behind an element, `outside-blur` softens everything the element is not: the modal scrim, where the screen goes soft and the dialog stays sharp:
 
 ```css
@@ -219,6 +221,7 @@ Every one of these depends on a render-interface feature: layers, clip masks, fi
 | Text, at any size or transform scale | Works. See §6 |
 | `font-effect`, all four | Works, in both renderers, resolved from the field. Bounded in reach: see §6 |
 | `filter`: `brightness`, `contrast`, `grayscale`, `invert`, `opacity`, `saturate`, `sepia`, `hue-rotate` | Works. Applied to the resolved layer in the order named, before any blur |
+| `filter: drop-shadow` | Works. The layer's silhouette is moved, tinted and blurred, then the layer is drawn over it, the same steps the preview takes. Each one costs a layer and three passes, so put it on a small element such as an icon rather than a panel |
 | `mask-image` | Works. The masked subtree and the mask decorator are each drawn into a layer and composited, so text under a mask goes through the layer path rather than straight to the target. `examples/mask_image.rml` covers every decorator that can be a mask |
 | **`backdrop-filter` other than `blur` and `outside-blur`** | **Banned.** These parse, log once and render nothing in engine |
 

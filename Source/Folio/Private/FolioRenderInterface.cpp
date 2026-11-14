@@ -1,5 +1,6 @@
 #include "FolioRenderInterface.h"
 
+#include "FolioDropShadow.h"
 #include "FolioInsights.h"
 
 #include "Engine/Texture2D.h"
@@ -1924,6 +1925,27 @@ Rml::CompiledFilterHandle FFolioRenderInterface::CompileFilter(const Rml::String
 		}
 
 		Filter.Colour = Colour;
+	}
+	else if (Name == "drop-shadow")
+	{
+		// Rides the custom-filter seam: it is RDG passes over the resolved layer, with a print and a margin.
+		Rml::Colourb Colour;
+		Rml::Vector2f Offset(0.0f, 0.0f);
+		float Sigma = 0.0f;
+		if (const auto It = Parameters.find("color"); It != Parameters.end())
+		{
+			It->second.GetInto(Colour);
+		}
+		if (const auto It = Parameters.find("offset"); It != Parameters.end())
+		{
+			It->second.GetInto(Offset);
+		}
+		if (const auto It = Parameters.find("sigma"); It != Parameters.end())
+		{
+			It->second.GetInto(Sigma);
+		}
+		Filter.Custom = Folio::MakeDropShadowCall(FColor(Colour.red, Colour.green, Colour.blue, Colour.alpha),
+			ToVector2f(Offset), Sigma);
 	}
 	else if (Name == "gpu-filter")
 	{

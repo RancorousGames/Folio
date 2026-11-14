@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GlobalShader.h"
+#include "RenderGraphDefinitions.h"
 #include "ShaderParameterStruct.h"
 
 class FRHICommandListImmediate;
@@ -48,4 +49,11 @@ namespace Folio
 	 * stepping keeps the kernel covering the same distance in the document either way.
 	 */
 	void BlurRenderTarget(class UTextureRenderTarget2D* Target, float Sigma, float Step = 1.0f);
+
+	/**
+	 * The same blur inside a graph the caller is already building, for an effect that blurs one of its own
+	 * steps (drop-shadow). Target is blurred in place; Scratch must match its size and format.
+	 */
+	void AddBlurPasses(class FRDGBuilder& GraphBuilder, FRDGTextureRef Target, FRDGTextureRef Scratch, float Sigma,
+		FIntPoint Size, float Step = 1.0f);
 }

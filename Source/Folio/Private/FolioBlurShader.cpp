@@ -92,4 +92,15 @@ namespace Folio
 				GraphBuilder.Execute();
 			});
 	}
+
+	void AddBlurPasses(FRDGBuilder& GraphBuilder, FRDGTextureRef Target, FRDGTextureRef Scratch, const float Sigma,
+		const FIntPoint Size, const float Step)
+	{
+		if (Sigma <= 0.0f)
+		{
+			return;
+		}
+		AddBlurPass(GraphBuilder, Target, Scratch, FVector2f(1.0f, 0.0f), Sigma, Size, Step);
+		AddBlurPass(GraphBuilder, Scratch, Target, FVector2f(0.0f, 1.0f), Sigma, Size, Step);
+	}
 }

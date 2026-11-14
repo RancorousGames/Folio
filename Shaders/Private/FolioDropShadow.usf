@@ -1,0 +1,41 @@
+// filter: drop-shadow(). Two modes of one pass, around a blur between them:
+//
+//   0  Silhouette: the layer's alpha, moved by the offset and painted in the shadow colour.
+//   1  Under: the layer drawn over the blurred silhouette, so the shadow shows only where the element does not.
+//
+// The same three steps as RmlUi's GL3 renderer, which is what the standalone preview draws. Everything is
+// premultiplied, matching RmlUi 6.x, and ShadowColour arrives premultiplied in linear light, the space the
+// layer's sRGB target decodes to on read.
+
+#include "/Engine/Public/Platform.ush"
+
+Texture2D SourceTexture;
+SamplerState SourceSampler;
+
+Texture2D ShadowTexture;
+SamplerState ShadowSampler;
+
+float4 ShadowColour;
+
+// xy: offset in UV. z: mode.
+float4 ShadowParameters;
+
+float2 InvSize;
+
+float4 MainPS(float4 SvPosition : SV_POSITION) : SV_Target0
+{
+	const float2 UV = SvPosition.xy * InvSize;
+
+	if (ShadowParameters.z < 0.5f)
+	{
+		// Past the layer's edge is past everything it drew.
+		const float2 From = UV - ShadowParameters.xy;
+		const bool bInside = all(From >= 0.0f) && all(From <= 1.0f);
+		const float Alpha = bInside ? SourceTexture.SampleLevel(SourceSampler, From, 0).a : 0.0f;
+		return ShadowColour * Alpha;
+	}
+
+	const float4 Source = SourceTexture.SampleLevel(SourceSampler, UV, 0);
+	const float4 Shadow = ShadowTexture.SampleLevel(ShadowSampler, UV, 0);
+	return Source + (1.0f - Source.a) * Shadow;
+}
