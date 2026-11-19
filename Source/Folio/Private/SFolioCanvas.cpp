@@ -9,6 +9,7 @@
 #include "FolioInvalidation.h"
 #include "FolioResolveShader.h"
 #include "FolioInput.h"
+#include "FolioInputPreprocessor.h"
 #include "FolioUiSounds.h"
 #include "FolioRmlUi.h"
 #include "Engine/TextureRenderTarget2D.h"
@@ -145,6 +146,11 @@ SFolioCanvas::SFolioCanvas()
 
 void SFolioCanvas::Construct(const FArguments& InArgs)
 {
+	// Folio's module loads at PostConfigInit, before Slate necessarily exists.
+	// Register() then safely no-ops; retry as soon as the first real canvas
+	// is created, when Slate is initialized. Otherwise CommonUI can consume
+	// pad Confirm before it reaches a focused Folio inventory button.
+	FFolioInputPreprocessor::Register();
 	DesiredSize = InArgs._DesiredSize;
 
 	LiveCanvases.AddUnique(this);
